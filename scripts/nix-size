@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# nix-size - Show NAR size and closure size for store paths or flake references
+#
+# Usage:
+#   nix-size <installable>...
+#   nix-size nixpkgs#hello
+#   nix-size /nix/store/...
+#   nix-size .#homeConfigurations.damien.activationPackage
+
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: nix-size [OPTIONS] <installable>...
+
+Show NAR size and closure size for Nix store paths or flake references.
+
+Arguments:
+  <installable>    Store path or flake reference (e.g., nixpkgs#hello, .#package)
+
+Options:
+  -b, --build      Build the derivation if not in store (default: error if not present)
+  -j, --json       Output in JSON format
+  -h, --help       Show this help message
+
+Examples:
+  nix-size nixpkgs#hello
+  nix-size /nix/store/...-hello-2.12.2
+  nix-size .#homeConfigurations.damien.activationPackage --build
+  nix-size nixpkgs#git nixpkgs#ripgrep
+EOF
+}
+
+build=false
+json=false
+installables=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -b|--build)
+            build=true
+            shift
+            ;;
+        -j|--json)
+            json=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            installables+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#installables[@]} -eq 0 ]]; then
+    echo "Error: No installable specified" >&2
+    usage >&2
+    exit 1
+fi
+
+format_size() {
+    local bytes=$1
+    if [[ $bytes -ge 1073741824 ]]; then
+        printf "%.1f GiB" "$(echo "scale=1; $bytes / 1073741824" | bc)"
+    elif [[ $bytes -ge 1048576 ]]; then
+        printf "%.1f MiB" "$(echo "scale=1; $bytes / 1048576" | bc)"
+    elif [[ $bytes -ge 1024 ]]; then
+        printf "%.1f KiB" "$(echo "scale=1; $bytes / 1024" | bc)"
+    else
+        printf "%d B" "$bytes"
+    fi
+}
+
+process_installable() {
+    local installable=$1
+    local store_path
+
+    # If it's already a store path, use it directly
+    if [[ $installable == /nix/store/* ]]; then
+        store_path=$installable
+    else
+        # Get the store path from the flake reference
+        if $build; then
+            store_path=$(nix build "$installable" --no-link --print-out-paths 2>/dev/null) || {
+                echo "Error: Failed to build $installable" >&2
+                return 1
+            }
+        else
+            store_path=$(nix path-info "$installable" 2>/dev/null) || {
+                echo "Error: $installable not in store. Use --build to build it first." >&2
+                return 1
+            }
+        fi
+    fi
+
+    # Get size info (NAR size and closure size in bytes)
+    local info
+    info=$(nix path-info -s -S "$store_path" 2>/dev/null) || {
+        echo "Error: Failed to get path info for $store_path" >&2
+        return 1
+    }
+
+    local nar_size closure_size
+    nar_size=$(echo "$info" | awk '{print $2}')
+    closure_size=$(echo "$info" | awk '{print $3}')
+
+    if $json; then
+        printf '{"installable":"%s","store_path":"%s","nar_size":%s,"closure_size":%s,"nar_size_human":"%s","closure_size_human":"%s"}\n' \
+            "$installable" \
+            "$store_path" \
+            "$nar_size" \
+            "$closure_size" \
+            "$(format_size "$nar_size")" \
+            "$(format_size "$closure_size")"
+    else
+        local nar_human closure_human
+        nar_human=$(format_size "$nar_size")
+        closure_human=$(format_size "$closure_size")
+
+        printf "%-60s\n" "$installable"
+        printf "  Store path:   %s\n" "$store_path"
+        printf "  NAR size:     %10s  (%d bytes)\n" "$nar_human" "$nar_size"
+        printf "  Closure size: %10s  (%d bytes)\n" "$closure_human" "$closure_size"
+        echo
+    fi
+}
+
+if $json && [[ ${#installables[@]} -gt 1 ]]; then
+    echo "["
+    first=true
+    for installable in "${installables[@]}"; do
+        if $first; then
+            first=false
+        else
+            echo ","
+        fi
+        process_installable "$installable" | tr -d '\n'
+    done
+    echo
+    echo "]"
+else
+    for installable in "${installables[@]}"; do
+        process_installable "$installable"
+    done
+fi

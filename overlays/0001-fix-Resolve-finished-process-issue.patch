@@ -1,0 +1,55 @@
+From 8fbbaf78a8f8487a2082d32901622362bb0c7afe Mon Sep 17 00:00:00 2001
+From: Damien Nguyen <damien.nguyen@hexagon.com>
+Date: Fri, 28 Nov 2025 21:48:06 +0100
+Subject: [PATCH] fix: Resolve finished process issue
+
+---
+ lib/NOM/Update.hs | 11 ++++-------
+ test/Golden.hs    | 11 +++++++++--
+ 2 files changed, 13 insertions(+), 9 deletions(-)
+
+diff --git a/lib/NOM/Update.hs b/lib/NOM/Update.hs
+index b628206..0f8aea1 100644
+--- a/lib/NOM/Update.hs
++++ b/lib/NOM/Update.hs
+@@ -289,14 +289,11 @@ processJsonMessage = \case
+         now <- getNow
+         pathId <- getStorePathId path
+         uploaded to pathId now
+-      Just (MkActivityStatus{activity = JSON.Build drv host}) -> do
++      Just (MkActivityStatus{activity = JSON.Build drv host}) -> withChange do
+         tokens <- use #successTokens
+-        if tokens > 0
+-          then withChange do
+-            modifying' #successTokens pred
+-            drvId <- lookupDerivation drv
+-            finishBuildByDrvId host drvId
+-          else noChange
++        when (tokens > 0) $ modifying' #successTokens pred
++        drvId <- lookupDerivation drv
++        finishBuildByDrvId host drvId
+       _ -> pure (isJust interesting_activity)
+   Plain msg -> tell [Right msg] >> noChange
+   ParseError err -> tell [Left err] >> noChange
+diff --git a/test/Golden.hs b/test/Golden.hs
+index 43ab6b0..90af37a 100644
+--- a/test/Golden.hs
++++ b/test/Golden.hs
+@@ -137,5 +137,12 @@ goldenFail :: TestConfig -> Test
+ goldenFail config = testBuild "fail" config \_ MkNOMState{fullSummary = d@MkDependencySummary{..}} -> do
+   assertEqual ("There should be one waiting build in " <> show d) 1 (CSet.size plannedBuilds)
+   assertEqual ("There should be one failed build in " <> show d) 1 (CMap.size failedBuilds)
+-  assertEqual ("There should be no completed builds in " <> show d) 0 (CMap.size completedBuilds)
+-  assertEqual ("There should be one unfinished build " <> show d) 1 (CMap.size runningBuilds)
++  -- JSON messages have explicit Stop events that mark builds as completed,
++  -- old-style messages don't have Stop events so builds remain running
++  if config.oldStyle
++    then do
++      assertEqual ("There should be no completed builds in " <> show d) 0 (CMap.size completedBuilds)
++      assertEqual ("There should be one unfinished build " <> show d) 1 (CMap.size runningBuilds)
++    else do
++      assertEqual ("There should be one completed build in " <> show d) 1 (CMap.size completedBuilds)
++      assertEqual ("There should be no unfinished builds " <> show d) 0 (CMap.size runningBuilds)
+-- 
+2.52.0
+

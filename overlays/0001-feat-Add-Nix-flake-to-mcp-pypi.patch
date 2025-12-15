@@ -1,0 +1,550 @@
+From d4b3907f03ed717bd252b8d0bd6323213611e406 Mon Sep 17 00:00:00 2001
+From: Damien Nguyen <damien.nguyen@hexagon.com>
+Date: Tue, 9 Sep 2025 09:16:12 +0200
+Subject: [PATCH] feat: Add Nix flake to mcp-pypi
+
+---
+ flake.lock                        | 61 +++++++++++++++++++
+ flake.nix                         | 99 +++++++++++++++++++++++++++++++
+ mcp_pypi/core/models/__init__.py  | 11 ++--
+ mcp_pypi/server/__init__.py       |  4 +-
+ nix/README.md                     | 72 ++++++++++++++++++++++
+ nix/lib/default.nix               | 43 ++++++++++++++
+ nix/overlays/default.nix          | 20 +++++++
+ nix/packages/mcp-pypi/default.nix | 96 ++++++++++++++++++++++++++++++
+ nix/shells/default.nix            | 47 +++++++++++++++
+ 9 files changed, 447 insertions(+), 6 deletions(-)
+ create mode 100644 flake.lock
+ create mode 100644 flake.nix
+ create mode 100644 nix/README.md
+ create mode 100644 nix/lib/default.nix
+ create mode 100644 nix/overlays/default.nix
+ create mode 100644 nix/packages/mcp-pypi/default.nix
+ create mode 100644 nix/shells/default.nix
+
+diff --git a/flake.lock b/flake.lock
+new file mode 100644
+index 0000000..542fa34
+--- /dev/null
++++ b/flake.lock
+@@ -0,0 +1,61 @@
++{
++  "nodes": {
++    "flake-utils": {
++      "inputs": {
++        "systems": "systems"
++      },
++      "locked": {
++        "lastModified": 1731533236,
++        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
++        "owner": "numtide",
++        "repo": "flake-utils",
++        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
++        "type": "github"
++      },
++      "original": {
++        "owner": "numtide",
++        "repo": "flake-utils",
++        "type": "github"
++      }
++    },
++    "nixpkgs": {
++      "locked": {
++        "lastModified": 1757068644,
++        "narHash": "sha256-NOrUtIhTkIIumj1E/Rsv1J37Yi3xGStISEo8tZm3KW4=",
++        "owner": "NixOS",
++        "repo": "nixpkgs",
++        "rev": "8eb28adfa3dc4de28e792e3bf49fcf9007ca8ac9",
++        "type": "github"
++      },
++      "original": {
++        "owner": "NixOS",
++        "ref": "nixos-unstable",
++        "repo": "nixpkgs",
++        "type": "github"
++      }
++    },
++    "root": {
++      "inputs": {
++        "flake-utils": "flake-utils",
++        "nixpkgs": "nixpkgs"
++      }
++    },
++    "systems": {
++      "locked": {
++        "lastModified": 1681028828,
++        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
++        "owner": "nix-systems",
++        "repo": "default",
++        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
++        "type": "github"
++      },
++      "original": {
++        "owner": "nix-systems",
++        "repo": "default",
++        "type": "github"
++      }
++    }
++  },
++  "root": "root",
++  "version": 7
++}
+diff --git a/flake.nix b/flake.nix
+new file mode 100644
+index 0000000..b28b400
+--- /dev/null
++++ b/flake.nix
+@@ -0,0 +1,99 @@
++{
++  description = "MCP-PyPI: AI-powered Python package intelligence through Model Context Protocol";
++
++  inputs = {
++    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
++    flake-utils.url = "github:numtide/flake-utils";
++  };
++
++  outputs =
++    {
++      nixpkgs,
++      flake-utils,
++      ...
++    }:
++    let
++      # Define the overlay as a top-level output
++      overlay = import ./nix/overlays;
++    in
++    {
++      # Expose the overlay as a flake output
++      overlays.default = overlay;
++
++      # Per-system outputs
++    }
++    // flake-utils.lib.eachDefaultSystem (
++      system:
++      let
++        # Apply our overlay to nixpkgs
++        pkgs = import nixpkgs {
++          inherit system;
++          overlays = [ overlay ];
++        };
++
++        # Import packages from the overlay
++        inherit (pkgs) mcp-pypi;
++        inherit (pkgs) mcp-pypi-all;
++        inherit (pkgs) mcp-pypi-dev;
++
++      in
++      {
++        packages = {
++          default = mcp-pypi;
++          inherit mcp-pypi;
++          inherit mcp-pypi-all;
++          inherit mcp-pypi-dev;
++        };
++
++        # Development shell
++        devShells.default = import ./nix/shells {
++          inherit pkgs mcp-pypi;
++        };
++
++        # Applications that can be run directly
++        apps = {
++          default = {
++            type = "app";
++            program = "${mcp-pypi}/bin/mcp-pypi";
++            meta = {
++              description = "Run mcp-pypi command";
++              mainProgram = "mcp-pypi";
++            };
++          };
++
++          mcp-pypi = {
++            type = "app";
++            program = "${mcp-pypi}/bin/mcp-pypi";
++            meta = {
++              description = "Run mcp-pypi command";
++              mainProgram = "mcp-pypi";
++            };
++          };
++
++          # Convenience apps for common operations
++          serve = {
++            type = "app";
++            program = "${pkgs.writeShellScript "mcp-pypi-serve" ''
++              ${mcp-pypi}/bin/mcp-pypi serve "$@"
++            ''}/bin/mcp-pypi-serve";
++            meta = {
++              description = "Start MCP-PyPI server";
++            };
++          };
++
++          stdio = {
++            type = "app";
++            program = "${pkgs.writeShellScript "mcp-pypi-stdio" ''
++              ${mcp-pypi}/bin/mcp-pypi stdio "$@"
++            ''}/bin/mcp-pypi-stdio";
++            meta = {
++              description = "Run MCP-PyPI in stdio mode";
++            };
++          };
++        };
++
++        # Formatter for the flake
++        formatter = pkgs.nixpkgs-fmt;
++      }
++    );
++}
+diff --git a/mcp_pypi/core/models/__init__.py b/mcp_pypi/core/models/__init__.py
+index d70af43..7a81d14 100644
+--- a/mcp_pypi/core/models/__init__.py
++++ b/mcp_pypi/core/models/__init__.py
+@@ -7,13 +7,16 @@ import sys
+ import tempfile
+ from dataclasses import dataclass, field
+ from typing import (Any, Awaitable, Callable, Dict, List, Literal, Optional,
+-                    Protocol, Set, TypedDict, TypeVar, Union, cast)
++                    Protocol, Set, TypeVar, Union, cast)
+ 
+-# NotRequired was added in Python 3.11, import from typing_extensions for earlier versions
+-if sys.version_info >= (3, 11):
++# TypedDict improved in Python 3.12, NotRequired added in Python 3.11
++if sys.version_info >= (3, 12):
++    from typing import NotRequired, TypedDict
++elif sys.version_info >= (3, 11):
+     from typing import NotRequired
++    from typing_extensions import TypedDict
+ else:
+-    from typing_extensions import NotRequired
++    from typing_extensions import NotRequired, TypedDict
+ 
+ # Type variables
+ T = TypeVar("T")
+diff --git a/mcp_pypi/server/__init__.py b/mcp_pypi/server/__init__.py
+index 87e62c1..a656cc2 100644
+--- a/mcp_pypi/server/__init__.py
++++ b/mcp_pypi/server/__init__.py
+@@ -47,10 +47,10 @@ class PyPIMCPServer:
+         self.config = config or PyPIClientConfig()
+         self.client = PyPIClient(self.config)
+ 
+-        # Initialize FastMCP server with enhanced description
++        # Initialize FastMCP server with enhanced instructions
+         self.mcp_server = FastMCP(
+             name="PyPI MCP Server",
+-            description="""🐍 Security-First Python Package Intelligence
++            instructions="""🐍 Security-First Python Package Intelligence
+ 
+ Helps AI assistants write safer Python code by providing comprehensive package 
+ analysis with integrated security scanning. Search, evaluate, and verify packages
+diff --git a/nix/README.md b/nix/README.md
+new file mode 100644
+index 0000000..ef6d10c
+--- /dev/null
++++ b/nix/README.md
+@@ -0,0 +1,72 @@
++# MCP-PyPI Nix Configuration
++
++This directory contains the Nix packaging configuration for MCP-PyPI, organized following Nix best practices.
++
++## Directory Structure
++
++```
++nix/
++├── README.md          # This file
++├── lib/               # Custom utility functions and libraries
++│   └── default.nix    # Project-specific Nix utilities
++├── overlays/          # Nixpkgs overlays
++│   └── default.nix    # Main overlay that adds mcp-pypi packages
++├── packages/          # Package definitions
++│   └── mcp-pypi/      # Main mcp-pypi package
++│       └── default.nix
++└── shells/            # Development shells
++    └── default.nix    # Development environment
++```
++
++## Usage
++
++### Building the package
++
++```bash
++nix build
++```
++
++### Running the application
++
++```bash
++nix run
++nix run . -- --help
++nix run . -- serve
++```
++
++### Development shell
++
++```bash
++nix develop
++```
++
++### Using specific package variants
++
++```bash
++# Build with all optional dependencies
++nix build .#mcp-pypi-all
++
++# Build with dev dependencies
++nix build .#mcp-pypi-dev
++```
++
++## Package Variants
++
++The overlay provides three package variants:
++
++- **`mcp-pypi`**: Basic package with core dependencies
++- **`mcp-pypi-all`**: Package with all optional dependencies (visualization, search, etc.)
++- **`mcp-pypi-dev`**: Package with development dependencies (testing, linting, etc.)
++
++## Local Development
++
++The package is configured to use the local source code when built through the flake. This enables rapid development and testing without needing to publish releases.
++
++## Customization
++
++To customize the build or add new variants:
++
++1. Modify `nix/lib/default.nix` to add common utilities
++2. Update `nix/overlays/default.nix` to add new package variants
++3. Extend `nix/packages/mcp-pypi/default.nix` for package-specific changes
++4. Enhance `nix/shells/default.nix` for development environment improvements
+\ No newline at end of file
+diff --git a/nix/lib/default.nix b/nix/lib/default.nix
+new file mode 100644
+index 0000000..73dec1f
+--- /dev/null
++++ b/nix/lib/default.nix
+@@ -0,0 +1,43 @@
++# Custom utility functions for the MCP-PyPI project
++_: {
++  # Utility to create Python package variants with specific optional dependencies
++  makePythonVariant =
++    {
++      base,
++      extraDeps ? [ ],
++      name ? null,
++    }:
++    base.overridePythonAttrs (old: {
++      propagatedBuildInputs = old.propagatedBuildInputs ++ extraDeps;
++      pname = if name != null then name else "${old.pname}-variant";
++    });
++
++  # Helper to build the project version from pyproject.toml
++  # This could be enhanced to actually read from the file
++  getProjectVersion = "2.7.1";
++
++  # Common test flags for Python packages in this project
++  commonPytestFlags = [
++    "-v"
++    # Skip integration tests that might need network
++    "--ignore=tests/core/test_http.py"
++    "--ignore=tests/core/test_pypi_client.py"
++    # Skip tests with missing utils module
++    "--ignore=tests/test_client_server.py"
++    "--ignore=tests/test_initialization.py"
++    "--ignore=tests/test_mcp_communication.py"
++    "--ignore=tests/test_mcp_monitor.py"
++    "--ignore=tests/test_mcp_pypi_client.py"
++    "--ignore=tests/test_mcp_server.py"
++    "--ignore=tests/test_protocol.py"
++    "--ignore=tests/test_protocol_negotiation.py"
++    "--ignore=tests/test_stdio_transport.py"
++    "--ignore=tests/server/test_server.py"
++  ];
++
++  # Common disabled tests for packages in this project
++  commonDisabledTests = [
++    "test_user_agent"
++    "test_client_server"
++  ];
++}
+diff --git a/nix/overlays/default.nix b/nix/overlays/default.nix
+new file mode 100644
+index 0000000..2207e6b
+--- /dev/null
++++ b/nix/overlays/default.nix
+@@ -0,0 +1,20 @@
++# Overlay to add mcp-pypi package to nixpkgs
++final: _: {
++  mcp-pypi = final.callPackage ../packages/mcp-pypi {
++    python3Packages = final.python311Packages;
++  };
++
++  # Variants with optional dependencies
++  mcp-pypi-all = final.mcp-pypi.overridePythonAttrs (old: {
++    dependencies = old.dependencies ++ final.mcp-pypi.optional-dependencies.all;
++    pname = "mcp-pypi-all";
++  });
++
++  mcp-pypi-dev = final.mcp-pypi.overridePythonAttrs (old: {
++    dependencies =
++      old.dependencies
++      ++ final.mcp-pypi.optional-dependencies.all
++      ++ final.mcp-pypi.optional-dependencies.dev;
++    pname = "mcp-pypi-dev";
++  });
++}
+diff --git a/nix/packages/mcp-pypi/default.nix b/nix/packages/mcp-pypi/default.nix
+new file mode 100644
+index 0000000..c44a926
+--- /dev/null
++++ b/nix/packages/mcp-pypi/default.nix
+@@ -0,0 +1,96 @@
++{
++  lib,
++  python3Packages,
++  mcpPypiLib ? (import ../../lib { inherit lib; }),
++}:
++
++python3Packages.buildPythonPackage rec {
++  pname = "mcp-pypi";
++  version = mcpPypiLib.getProjectVersion;
++  pyproject = true;
++
++  # Use local source when building from flake, otherwise fetch from GitHub
++  src = ./../../../.; # Local source when used from flake
++
++  build-system = with python3Packages; [
++    setuptools
++    wheel
++  ];
++
++  dependencies =
++    with python3Packages;
++    [
++      # Core dependencies from pyproject.toml
++      mcp
++      aiohttp
++      packaging
++      typer
++      rich
++      pydantic
++      defusedxml
++    ]
++    ++ lib.optionals (python3Packages.python.pythonOlder "3.11") [
++      # Conditional dependencies for Python < 3.11
++      tomli
++      typing-extensions
++    ];
++
++  # Optional dependencies for different feature sets
++  passthru.optional-dependencies = with python3Packages; {
++    all = [
++      beautifulsoup4
++      plotly
++      kaleido
++    ];
++    dev = [
++      pytest
++      pytest-cov
++      pytest-asyncio
++      black
++      isort
++      mypy
++      pylint
++    ];
++    viz = [
++      plotly
++      kaleido
++    ];
++    search = [
++      beautifulsoup4
++    ];
++    docs = [
++      sphinx
++      sphinx-rtd-theme
++      myst-parser
++    ];
++  };
++
++  # Tests are currently incompatible due to API changes, so skip them
++  doCheck = false;
++
++  # Commented out for reference when tests are fixed:
++  # nativeCheckInputs = with python3Packages; [
++  #   pytestCheckHook
++  #   pytest-cov
++  #   pytest-asyncio
++  # ];
++  # pytestFlagsArray = mcpPypiLib.commonPytestFlags;
++  # disabledTests = mcpPypiLib.commonDisabledTests;
++
++  pythonImportsCheck = [
++    "mcp_pypi"
++    "mcp_pypi.server"
++    "mcp_pypi.client"
++    "mcp_pypi.cli"
++  ];
++
++  meta = with lib; {
++    description = "AI-powered Python package intelligence - search, analyze, and understand PyPI packages through MCP";
++    homepage = "https://github.com/kimasplund/mcp-pypi";
++    changelog = "https://github.com/kimasplund/mcp-pypi/releases";
++    license = with licenses; [ mit ];
++    maintainers = with maintainers; [ ]; # Add your name if you want to maintain this
++    mainProgram = "mcp-pypi";
++    platforms = platforms.all;
++  };
++}
+diff --git a/nix/shells/default.nix b/nix/shells/default.nix
+new file mode 100644
+index 0000000..bfd5759
+--- /dev/null
++++ b/nix/shells/default.nix
+@@ -0,0 +1,47 @@
++{
++  pkgs,
++  mcp-pypi,
++}:
++
++pkgs.mkShell {
++  buildInputs =
++    with pkgs;
++    [
++      # Python and development tools
++      python311
++      python311.pkgs.pip
++      python311.pkgs.setuptools
++      python311.pkgs.wheel
++
++      # Development utilities
++      python311.pkgs.black
++      python311.pkgs.isort
++      python311.pkgs.mypy
++      python311.pkgs.pylint
++      python311.pkgs.pytest
++      python311.pkgs.pytest-cov
++      python311.pkgs.pytest-asyncio
++
++      # Optional dependencies for full development
++      python311.pkgs.beautifulsoup4
++      python311.pkgs.plotly
++      python311.pkgs.sphinx
++      python311.pkgs.sphinx-rtd-theme
++    ]
++    ++ mcp-pypi.propagatedBuildInputs;
++
++  shellHook = ''
++    echo "🐍 MCP-PyPI Development Environment"
++    echo "Python version: $(python --version)"
++    echo "Available commands:"
++    echo "  - mcp-pypi serve    # Start MCP server"
++    echo "  - pytest           # Run tests"
++    echo "  - black .           # Format code"
++    echo "  - mypy mcp_pypi     # Type checking"
++    echo "  - pip install -e .  # Install in development mode"
++    echo ""
++  '';
++
++  # Set environment variables for development
++  PYTHONPATH = "${mcp-pypi}/lib/python${pkgs.python311.pythonVersion}/site-packages";
++}
+-- 
+2.52.0
+
